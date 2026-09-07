@@ -13,6 +13,7 @@
 ## 操作命令
 
 ```bash
+git clone https://github.com/chopinhhm/library-b-handoff-0xiaohe333.git
 git clone https://github.com/chopinhhm/library-borrowing-system.git
 cd library-borrowing-system
 git checkout feature/B-data
