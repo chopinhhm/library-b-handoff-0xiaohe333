@@ -1,0 +1,143 @@
+diff --git a/docs/API.md b/docs/API.md
+index ff6b362..b4297c5 100644
+--- a/docs/API.md
++++ b/docs/API.md
+@@ -7,7 +7,7 @@
+ | 方法 | 路径 | 说明 |
+ | --- | --- | --- |
+ | GET | `/api/auth/me` | 当前登录账号、角色和关联读者 |
+-| GET | `/api/books?keyword=` | 查询馆藏 |
++| GET | `/api/books?keyword=&category=&shelfLocation=&availableOnly=` | 按关键字、分类、书架和可借状态查询馆藏 |
+ | GET | `/api/reader-types` | 查询借阅规则 |
+ 
+ ## 管理员接口
+diff --git a/src/main/java/com/chopinhhm/library/moduleb/CatalogController.java b/src/main/java/com/chopinhhm/library/moduleb/CatalogController.java
+index ef33702..6e4e655 100644
+--- a/src/main/java/com/chopinhhm/library/moduleb/CatalogController.java
++++ b/src/main/java/com/chopinhhm/library/moduleb/CatalogController.java
+@@ -19,7 +19,12 @@ public class CatalogController {
+     public CatalogController(CatalogService service) { this.service = service; }
+ 
+     @GetMapping("/books")
+-    public List<Book> books(@RequestParam(required = false) String keyword) { return service.searchBooks(keyword); }
++    public List<Book> books(@RequestParam(required = false) String keyword,
++                            @RequestParam(required = false) String category,
++                            @RequestParam(required = false) String shelfLocation,
++                            @RequestParam(defaultValue = "false") boolean availableOnly) {
++        return service.searchBooks(keyword, category, shelfLocation, availableOnly);
++    }
+ 
+     @PostMapping("/admin/books")
+     public Book saveBook(@Valid @RequestBody Book book) { return service.saveBook(book); }
+diff --git a/src/main/java/com/chopinhhm/library/moduleb/CatalogService.java b/src/main/java/com/chopinhhm/library/moduleb/CatalogService.java
+index 4e1fbbd..a61cbe0 100644
+--- a/src/main/java/com/chopinhhm/library/moduleb/CatalogService.java
++++ b/src/main/java/com/chopinhhm/library/moduleb/CatalogService.java
+@@ -2,6 +2,7 @@ package com.chopinhhm.library.moduleb;
+ 
+ import com.chopinhhm.library.common.BusinessException;
+ import java.util.List;
++import java.util.stream.Collectors;
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
+@@ -18,8 +19,22 @@ public class CatalogService {
+     }
+ 
+     public List<Book> searchBooks(String keyword) {
+-        if (keyword == null || keyword.trim().isEmpty()) return books.findAll();
+-        return books.findByTitleContainingIgnoreCaseOrAuthorContainingIgnoreCase(keyword, keyword);
++        return searchBooks(keyword, null, null, false);
++    }
++
++    public List<Book> searchBooks(String keyword, String category, String shelfLocation, boolean availableOnly) {
++        List<Book> candidates = isBlank(keyword) ? books.findAll()
++            : books.findByTitleContainingIgnoreCaseOrAuthorContainingIgnoreCase(keyword.trim(), keyword.trim());
++        return candidates.stream()
++            .filter(book -> isBlank(category) || category.trim().equalsIgnoreCase(book.getCategory()))
++            .filter(book -> isBlank(shelfLocation) || containsIgnoreCase(book.getShelfLocation(), shelfLocation.trim()))
++            .filter(book -> !availableOnly || book.getAvailableCopies() > 0)
++            .collect(Collectors.toList());
++    }
++
++    private boolean isBlank(String value) { return value == null || value.trim().isEmpty(); }
++    private boolean containsIgnoreCase(String value, String part) {
++        return value != null && value.toLowerCase().contains(part.toLowerCase());
+     }
+ 
+     @Transactional
+diff --git a/src/main/resources/static/app.js b/src/main/resources/static/app.js
+index 9a178e1..6c0fc13 100644
+--- a/src/main/resources/static/app.js
++++ b/src/main/resources/static/app.js
+@@ -56,11 +56,17 @@ async function loadDashboard(){
+   $('#stats').innerHTML=cards.map(x=>`<div class="stat"><small>${x[0]}</small><strong>${x[1]}</strong></div>`).join('');
+ }
+ 
+-async function loadBooks(keyword=''){
+-  state.books=await api(`/api/books${keyword?`?keyword=${encodeURIComponent(keyword)}`:''}`);
++async function loadBooks(){
++  const params=new URLSearchParams();
++  if($('#bookKeyword').value.trim())params.set('keyword',$('#bookKeyword').value.trim());
++  if($('#bookCategory').value.trim())params.set('category',$('#bookCategory').value.trim());
++  if($('#bookShelf').value.trim())params.set('shelfLocation',$('#bookShelf').value.trim());
++  if($('#availableOnly').checked)params.set('availableOnly','true');
++  state.books=await api(`/api/books${params.toString()?`?${params}`:''}`);
+   $('#bookRows').innerHTML=state.books.length?state.books.map(b=>`<tr><td>${b.id}</td><td>${escapeHtml(b.isbn)}</td><td>${escapeHtml(b.title)}</td><td>${escapeHtml(b.author)}</td><td>${escapeHtml(b.category)}</td><td>${escapeHtml(b.shelfLocation)}</td><td>${b.availableCopies}/${b.totalCopies}</td>${admin()?`<td><div class="actions"><button onclick="editBook(${b.id})">编辑</button><button onclick="deleteBook(${b.id})">删除</button></div></td>`:''}</tr>`).join(''):empty(admin()?8:7);
+ }
+-$('#searchBooks').onclick=()=>loadBooks($('#bookKeyword').value).catch(e=>notify(e.message,true));
++$('#searchBooks').onclick=()=>loadBooks().catch(e=>notify(e.message,true));
++$('#resetBooks').onclick=()=>{['bookKeyword','bookCategory','bookShelf'].forEach(id=>$(`#${id}`).value='');$('#availableOnly').checked=false;loadBooks().catch(e=>notify(e.message,true))};
+ $('#addBookBtn').onclick=()=>bookModal();
+ function bookModal(book={}){openModal(book.id?'编辑图书':'新增图书',`
+   ${field('isbn','ISBN',book.isbn||'','required')}${field('title','书名',book.title||'','required')}
+diff --git a/src/main/resources/static/index.html b/src/main/resources/static/index.html
+index 6a0e991..7d4d1bf 100644
+--- a/src/main/resources/static/index.html
++++ b/src/main/resources/static/index.html
+@@ -50,7 +50,7 @@
+       </section>
+ 
+       <section id="books" class="view">
+-        <div class="toolbar"><input id="bookKeyword" placeholder="搜索书名或作者"><button id="searchBooks">查询</button><button id="addBookBtn" class="primary" data-admin>新增图书</button></div>
++        <div class="toolbar"><input id="bookKeyword" placeholder="搜索书名或作者"><input id="bookCategory" placeholder="分类"><input id="bookShelf" placeholder="书架位置"><label><input id="availableOnly" type="checkbox">仅看可借</label><button id="searchBooks">查询</button><button id="resetBooks">重置</button><button id="addBookBtn" class="primary" data-admin>新增图书</button></div>
+         <div class="panel table-wrap"><table><thead><tr><th>ID</th><th>ISBN</th><th>书名</th><th>作者</th><th>分类</th><th>书架</th><th>可借/馆藏</th><th data-admin>操作</th></tr></thead><tbody id="bookRows"></tbody></table></div>
+       </section>
+ 
+diff --git a/src/test/java/com/chopinhhm/library/moduleb/CatalogFilterIntegrationTest.java b/src/test/java/com/chopinhhm/library/moduleb/CatalogFilterIntegrationTest.java
+new file mode 100644
+index 0000000..ba469c9
+--- /dev/null
++++ b/src/test/java/com/chopinhhm/library/moduleb/CatalogFilterIntegrationTest.java
+@@ -0,0 +1,31 @@
++package com.chopinhhm.library.moduleb;
++
++import static org.hamcrest.Matchers.hasSize;
++import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.test.web.servlet.MockMvc;
++
++@SpringBootTest
++@AutoConfigureMockMvc
++class CatalogFilterIntegrationTest {
++    @Autowired private MockMvc mvc;
++
++    @Test
++    void filtersBooksByCategoryShelfAndAvailability() throws Exception {
++        mvc.perform(get("/api/books")
++                .param("category", "文学")
++                .param("shelfLocation", "B-02")
++                .param("availableOnly", "true")
++                .with(httpBasic("reader", "reader123")))
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$", hasSize(1)))
++            .andExpect(jsonPath("$[0].title").value("红楼梦"));
++    }
++}
